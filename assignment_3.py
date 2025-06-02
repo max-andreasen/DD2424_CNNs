@@ -10,9 +10,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class CNN:
-    def __init__(self, X=None, y=None, m=100, lr=0.01, lam=0, stride=2):
+    def __init__(self, X, Y, y, m=100, lr=0.01, lam=0, stride=2, W=None, B=None, n_f=None, n_p=None, filters=None, K=10):
 
         self.X = X                  # X is the dataset consisting of images, y labels.
+        self.Y = Y
         self.y = y                  # Each image has 3 dimensions, so X is 4D.
 
         self.width = X.shape[0]
@@ -24,7 +25,8 @@ class CNN:
         # Network parameters.
         self.L = 2                  # We hardcode a 2 layer network for simplicity.
         self.m = m                  # Hidden layer dimensions (also referred to as 'd').
-        self.K = None               # The number of classes.
+        self.K = K                  # The number of classes.
+        self.MX = None              # Initialized to None. Calculated in the forward pass.
 
         # Network parameters
         self.lr = lr                # The initial learning rate of the model.
@@ -33,15 +35,15 @@ class CNN:
         self.lam = lam
 
         # Weights and parameters
-        self.W = [None] * 2
-        self.B = [None] * 2
+        self.W = W if W is not None else [None] * 2
+        self.B = B if B is not None else [None] * 2
         self.grads = {}
 
         # CNN parameters
         self.stride = stride        # Also referred to as 'f'.
-        self.filters = None         # A list with different filters (numpy arrays).
-        self.n_f = None             # Number of filters.
-        self.n_p = None             # Number of sub-patches to which the filter is applied.
+        self.filters = filters      # A list with different filters (numpy arrays).
+        self.n_f = n_f              # Number of filters.
+        self.n_p = n_p              # Number of sub-patches to which the filter is applied.
 
         # The model will hold the data.
         self.data = None
@@ -108,22 +110,44 @@ class CNN:
         return
 
 
-    def forward_pass(self, X):
-        # h is a collection of all response maps.
-        h = np.zeros((X.shape[0] // self.stride, X.shape[1] // self.stride, self.n_f))
 
-        for i in range(self.n_f):
-            H_i = np.max(0, self.convolve(X, self.filters[i]))     # shape (32/f, 32/f, 1)
-            H_i = H_i.reshape(-1, 1)                    # H is also denotes S sometimes.
-            h[:, i] = H_i
+    def forward_efficient(self, X_batch, return_testing=False):
+        return
 
-        assert h.shape == (self.n_f, self.n_p, 1), f"h is of wrong shape in forward pass: {h.shape}"
 
-        x1 = np.max(0, self.W[0] @ h + self.B[0])   # Applies ReLu.
-        s = self.W[1] @ x1 + self.B[1]
-        assert s.shape == (self.K, 1), f"S is of wrong size in forward pass: {s.shape}"
-        P = self.softmax(s)
+    def forward_pass(self, X_batch, return_testing=False):
 
+        hs = []
+        Ps = []
+        x1s = []
+        for j in range(X_batch.shape[-1]):
+            X_img=X_batch[:,:,:,j]
+            # h is a collection of all response maps.
+            h = np.zeros((self.n_f * self.n_p, 1), dtype=X_batch.dtype)
+            for i in range(self.n_f):
+                H_i = np.maximum(0, self.convolve(X_img, self.filters[:, :, :, i]))     # Applies ReLu.
+                assert H_i.shape == (32 // self.stride, 32 // self.stride), f"H_i is of wrong shape in forward pass: {H_i.shape}"
+                start = i * self.n_p
+                end = (i + 1) * self.n_p
+                h[start:end, 0] = H_i.reshape(-1)  # Flatten H_i to shape (n_p,) to create vertically stacked vectors.
+
+            assert h.shape == (self.n_f * self.n_p, 1), f"h is of wrong shape in forward pass: {h.shape}"
+
+            x1 = np.maximum(0, self.W[0] @ h + self.B[0])   # Applies ReLu.
+            x1s.append(x1)
+            s = self.W[1] @ x1 + self.B[1]
+            assert s.shape == (self.K, 1), f"S is of wrong size in forward pass: {s.shape}"
+            P = self.softmax(s)
+            Ps.append(P)
+            hs.append(h)
+
+        P = np.concatenate(Ps, axis=1)
+        if return_testing:
+            return {
+                'P': P,
+                'h': hs,
+                'x1': x1s,
+            }
         return P
 
 

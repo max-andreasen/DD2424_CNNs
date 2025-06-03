@@ -44,8 +44,6 @@ class CNN:
         self.lam = lam
 
         # Weights and parameters
-        self.W = W if W is not None else [None] * 2
-        self.B = B if B is not None else [None] * 2
         self.grads = {}
 
         # CNN parameters
@@ -61,6 +59,8 @@ class CNN:
         else:
             self.MX = None
 
+        self.W = W if W is not None else [None] * 2
+        self.B = B if B is not None else [None] * 2
 
 
     # -----------------------------------------------
@@ -199,7 +199,7 @@ class CNN:
 
 
 
-    def backwards_pass(self, X_batch, Y_batch, return_testing=False):
+    def backwards_pass(self, X_batch, Y_batch):
         outputs = self.forward_efficient(X_batch, return_params=True)
         P = outputs['P']
         x1 = outputs['x1'].squeeze(0)
@@ -221,13 +221,11 @@ class CNN:
         MXt = np.transpose(self.MX, (1, 0, 2))
         grad_Fs_flat = np.einsum('ijn, jln ->il', MXt, GG, optimize=True) / self.batch_size
 
-        if return_testing:
-            return {
-                'grad_Fs_flat': grad_Fs_flat,
-                'grad_W1': grad_W1,
-                'grad_W2': grad_W2
-            }
-        return grad_Fs_flat
+        return {
+            'grad_Fs_flat': grad_Fs_flat,
+            'grad_W1': grad_W1,
+            'grad_W2': grad_W2
+        }
 
 
 

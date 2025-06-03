@@ -18,7 +18,7 @@ class CNN:
     '''
 
     def __init__(self, X, Y, y, m=100, lr=0.01, lam=0, stride=2, n_batches=1,
-                 W=None, B=None, filters=None, n_filters=2, K=None,
+                 W=None, B=None, filters=None, n_filters=2,
                  init_MX=True):
 
         self.X = X                  # X is the dataset consisting of images, y labels.
@@ -35,7 +35,7 @@ class CNN:
         # Network parameters.
         self.L = 2                          # We hardcode a 2 layer network for simplicity.
         self.m = m                          # Hidden layer dimensions (also referred to as 'd').
-        self.K = K if K is not None else len(set(y))   # The number of classes.
+        self.K = self.Y.shape[0]            # The number of classes.
 
         # Network parameters
         self.lr = lr                # The initial learning rate of the model.
@@ -136,7 +136,7 @@ class CNN:
 
 
 
-    def forward_efficient(self, X_batch, return_testing=False):
+    def forward_efficient(self, X_batch, return_params=False):
         assert self.filters_flat.shape == (
         self.stride * self.stride * 3, self.n_f), f"Filters are of wrong shape: {self.filters_flat.shape}"
 
@@ -152,7 +152,7 @@ class CNN:
         assert s.shape == (self.K, self.batch_size), f"S is of wrong size in forward pass: {s.shape}"
         P = self.softmax(s)
 
-        if return_testing:
+        if return_params:
             return {
                 'P': P,
                 'h': conv_flat,
@@ -162,7 +162,7 @@ class CNN:
 
 
 
-    def forward_pass(self, X_batch, return_testing=False):
+    def forward_pass(self, X_batch, return_params=False):
         hs = []
         Ps = []
         x1s = []
@@ -189,7 +189,7 @@ class CNN:
         P = np.concatenate(Ps, axis=1)
         hs = np.concatenate(hs, axis=1)
         X1 = np.expand_dims(np.concatenate(x1s, axis=1), axis=0)
-        if return_testing:
+        if return_params:
             return {
                 'P': P,
                 'h': hs,
@@ -199,8 +199,35 @@ class CNN:
 
 
 
-    def backwards_pass(self):
-        return
+    def backwards_pass(self, X_batch, Y_batch, return_testing=False):
+        outputs = self.forward_efficient(X_batch, return_params=True)
+        P = outputs['P']
+        x1 = outputs['x1'].squeeze(0)
+        h = outputs['h']
+
+        G = -(Y_batch-P)
+        grad_W2 = (1/self.batch_size) * G @ x1.T
+
+        G = self.W[1].T @ G
+        G = G * (x1 > 0).astype(int)
+
+        grad_W1 = (1 / self.batch_size) * G @ h.T
+
+        G_batch = self.W[0].T @ G
+        G_batch = G_batch * (h > 0).astype(int)
+
+        GG = G_batch.reshape( (self.n_p, self.n_f, self.batch_size), order='C' )
+
+        MXt = np.transpose(self.MX, (1, 0, 2))
+        grad_Fs_flat = np.einsum('ijn, jln ->il', MXt, GG, optimize=True) / self.batch_size
+
+        if return_testing:
+            return {
+                'grad_Fs_flat': grad_Fs_flat,
+                'grad_W1': grad_W1,
+                'grad_W2': grad_W2
+            }
+        return grad_Fs_flat
 
 
 

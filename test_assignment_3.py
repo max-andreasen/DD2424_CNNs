@@ -1,34 +1,44 @@
 import unittest
 import numpy as np
 from assignment_3 import CNN
-from debugging import Sample_parameters
 
 class TestCNN(unittest.TestCase):
+    data = np.load('debug_info.npz')
+    X = data['X']
+    Y = data['Y']
+    y = data['y']
+    Fs = data['Fs']
+    fw = data['fw']
+    nf = data['nf']
+    Fs_flat = data['Fs_flat']
+    nh = data['nh']
+    W1 = data['W1']
+    W2 = data['W2']
+    b1 = data['b1']
+    b2 = data['b2']
+    MX = data['MX']
 
-    samples = Sample_parameters()
-    X = samples.X  # The first of the 5 images.
-    Y = samples.Y
-    y = samples.y  # The label (not necessary).
-    W1 = samples.W1
-    W2 = samples.W2
-    B1 = samples.b1
-    B2 = samples.b2
-    P = samples.P  # The softmax prediction of the first image.
-    Fs = samples.Fs  # The filters (there are 2).
-    MX = samples.MX
+    conv_outputs = data['conv_outputs']
+    conv_outputs_mat = data['conv_outputs_mat']
+    conv_outputs_flat = data['conv_outputs_flattened']
+    conv_flat = data['conv_flat']
 
-    x1 = samples.X1
-    conv_outputs = samples.conv_outputs
-    conv_flat = samples.conv_flat
-    conv_outputs_mat = samples.conv_outputs_mat
+    x1 = data['X1']
+    P = data['P']
+
+    grad_Fs_flat = data['grad_Fs_flat']
+    grad_W1 = data['grad_W1']
+    grad_W2 = data['grad_W2']
+    grad_b1 = data['grad_b1']
+    grad_b2 = data['grad_b2']
 
     stride = Fs.shape[0]
     n_p = (32 // stride) ** 2
 
     X = np.transpose(X.reshape((32, 32, 3, 5), order='F'), (1, 0, 2, 3))
 
-    cnn = CNN(X=X, Y=Y, y=y, W=[W1, W2], B=[B1, B2], stride=stride,
-              filters=Fs, K=10, init_MX=False)
+    cnn = CNN(X=X, Y=Y, y=y, W=[W1, W2], B=[b1, b2], stride=stride,
+              filters=Fs, init_MX=False)
 
     # CONVOLUTION
     def test_single_filter_convolution(self):
@@ -50,7 +60,7 @@ class TestCNN(unittest.TestCase):
         ])
 
         stride = 1
-        cnn = CNN(X=X, Y=None, y=None, K=10, init_MX=False)
+        cnn = CNN(X=X, Y=self.Y, y=self.y, init_MX=False)
         output = cnn.convolve(X, conv_filter, stride)
 
         self.assertEqual(output.shape, expected_output.shape)
@@ -68,10 +78,9 @@ class TestCNN(unittest.TestCase):
         self.assertEqual(self.MX.dtype, out_MX.dtype)
         np.testing.assert_allclose(self.MX, out_MX, rtol=1e-5, atol=1e-8)
 
-
     # FORWARD PASSES
     def test_forward_pass(self):
-        outputs = self.cnn.forward_pass(self.X, return_testing=True)
+        outputs = self.cnn.forward_pass(self.X, return_params=True)
         self.assertEqual(outputs['P'].shape, self.P.shape)
         self.assertEqual(outputs['P'].dtype, self.P.dtype)
         self.assertEqual(outputs['x1'].shape, self.x1.shape)
@@ -82,7 +91,7 @@ class TestCNN(unittest.TestCase):
         np.testing.assert_allclose(outputs['P'], self.P, rtol=1e-5, atol=1e-8)
 
     def test_forward_efficient(self):
-        outputs = self.cnn.forward_efficient(self.X, return_testing=True)
+        outputs = self.cnn.forward_efficient(self.X, return_params=True)
         self.assertEqual(outputs['P'].shape, self.P.shape)
         self.assertEqual(outputs['P'].dtype, self.P.dtype)
         self.assertEqual(outputs['x1'].shape, self.x1.shape)
@@ -92,6 +101,16 @@ class TestCNN(unittest.TestCase):
         np.testing.assert_allclose(outputs['x1'], self.x1, rtol=1e-5, atol=1e-8)
         np.testing.assert_allclose(outputs['P'], self.P, rtol=1e-5, atol=1e-8)
 
+    # BACKWARDS PASS
+    def test_backwards_pass(self):
+        outputs = self.cnn.backwards_pass(self.X, self.Y, return_testing=True)
+        self.assertEqual(outputs['grad_Fs_flat'].shape, self.grad_Fs_flat.shape)
+        self.assertEqual(outputs['grad_W1'].shape, self.grad_W1.shape)
+        self.assertEqual(outputs['grad_W2'].shape, self.grad_W2.shape)
+
+        np.testing.assert_allclose(outputs['grad_W1'], self.grad_W1, rtol=1e-5, atol=1e-8)
+        np.testing.assert_allclose(outputs['grad_W2'], self.grad_W2, rtol=1e-5, atol=1e-8)
+        np.testing.assert_allclose(outputs['grad_Fs_flat'], self.grad_Fs_flat, rtol=1e-5, atol=1e-8)
 
 
 if __name__ == "__main__":

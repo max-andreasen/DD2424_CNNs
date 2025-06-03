@@ -71,7 +71,6 @@ class TestCNN(unittest.TestCase):
 
     # FORWARD PASSES
     def test_forward_pass(self):
-        # Running the forward pass to see if any errors occur within the forward pass.
         outputs = self.cnn.forward_pass(self.X, return_testing=True)
         self.assertEqual(outputs['P'].shape, self.P.shape)
         self.assertEqual(outputs['P'].dtype, self.P.dtype)
@@ -84,6 +83,15 @@ class TestCNN(unittest.TestCase):
 
     def test_forward_efficient(self):
         outputs = self.cnn.forward_efficient(self.X, return_testing=True)
+        self.assertEqual(outputs['P'].shape, self.P.shape)
+        self.assertEqual(outputs['P'].dtype, self.P.dtype)
+        self.assertEqual(outputs['x1'].shape, self.x1.shape)
+        self.assertEqual(outputs['h'].shape, self.conv_flat.shape) # h is 'conv_flat'
+
+        np.testing.assert_allclose(outputs['h'], self.conv_flat, rtol=1e-5, atol=1e-8)
+        np.testing.assert_allclose(outputs['x1'], self.x1, rtol=1e-5, atol=1e-8)
+        np.testing.assert_allclose(outputs['P'], self.P, rtol=1e-5, atol=1e-8)
+
 
 
 if __name__ == "__main__":

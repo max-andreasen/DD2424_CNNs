@@ -17,7 +17,7 @@ class CNN:
     where WIDTH == HEIGHT.
     '''
 
-    def __init__(self, X, Y, y, m=100, lr=0.01, lam=0, stride=2, n_batches=10,
+    def __init__(self, X, Y, y, m=100, lr=0.01, lam=0, stride=2, n_batches=1,
                  W=None, B=None, filters=None, n_filters=2, K=None,
                  init_MX=True):
 
@@ -30,6 +30,7 @@ class CNN:
 
         # self.depth = X.shape[2]
         self.n_images = X.shape[-1]
+        self.batch_size = self.n_images // n_batches
 
         # Network parameters.
         self.L = 2                          # We hardcode a 2 layer network for simplicity.
@@ -69,8 +70,8 @@ class CNN:
         return
 
     def softmax(self, s):
-        e_x = np.exp(s - np.max(s))
-        return e_x / np.sum(e_x)
+        e_x = np.exp(s - np.max(s, axis=0, keepdims=True))
+        return e_x / np.sum(e_x, axis=0, keepdims=True)
 
     def cross_entropy_loss(self):
         return
@@ -139,8 +140,25 @@ class CNN:
         assert self.filters_flat.shape == (
         self.stride * self.stride * 3, self.n_f), f"Filters are of wrong shape: {self.filters_flat.shape}"
 
-        # NOTE: Also fills MX if MX is empty!
+        # NOTE: 'convolve_efficient' also fills MX if MX is empty!
         conv_outputs_mat = self.convolve_efficient(X_batch)
+
+        # Corresponds to h in the 'regular' forward pass.
+        conv_flat = np.fmax(conv_outputs_mat.reshape( (self.n_p*self.n_f, self.batch_size), order='C' ), 0 )
+
+        # Applies the connected layers and activates through ReLu.
+        x1 = np.maximum(0, self.W[0] @ conv_flat + self.B[0])
+        s = (self.W[1] @ x1 + self.B[1])
+        assert s.shape == (self.K, self.batch_size), f"S is of wrong size in forward pass: {s.shape}"
+        P = self.softmax(s)
+
+        if return_testing:
+            return {
+                'P': P,
+                'h': conv_flat,
+                'x1': np.expand_dims(x1, axis=0),
+            }
+        return P
 
 
 
@@ -168,7 +186,6 @@ class CNN:
             P = self.softmax(s)
             Ps.append(P)
             hs.append(h)
-
         P = np.concatenate(Ps, axis=1)
         hs = np.concatenate(hs, axis=1)
         X1 = np.expand_dims(np.concatenate(x1s, axis=1), axis=0)

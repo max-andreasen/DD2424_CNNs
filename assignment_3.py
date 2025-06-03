@@ -10,6 +10,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 
+
 class CNN:
     '''
     The class is currently built around handling square images,
@@ -151,16 +152,14 @@ class CNN:
             X_img = X_batch[:,:,:,j]
             # h is a collection of all response maps.
             h = np.zeros((self.n_f * self.n_p, 1), dtype=X_batch.dtype)
-            H_all = np.zeros( (self.height // self.stride, self.width // self.stride, self.n_f), dtype=X_batch.dtype)
+            H_all = np.zeros((self.width // self.stride, self.height // self.stride, self.n_f))
             for i in range(self.n_f):
                 H_i = np.maximum(0, self.convolve(X_img, self.filters[:, :, :, i]))     # Applies ReLu.
                 assert H_i.shape == (self.width // self.stride, self.height // self.stride), f"H_i is of wrong shape in forward pass: {H_i.shape}"
-                start = i * self.n_p
-                end = (i + 1) * self.n_p
-                h[start:end, 0] = H_i.reshape(-1)  # Flatten H_i to shape (n_p,) to create vertically stacked vectors.
-                H_all[:, :, i] = H_i
+                H_all[:, :, i] = H_i.reshape((self.width // self.stride, self.height // self.stride), order='C')
 
-            h = np.transpose(H_all, (2, 0, 1)).reshape(-1, 1)
+            h[0::2] = H_all[:, :, 0].reshape(-1, 1)
+            h[1::2] = H_all[:, :, 1].reshape(-1, 1)
             assert h.shape == (self.n_f * self.n_p, 1), f"h is of wrong shape in forward pass: {h.shape}"
             x1 = np.maximum(0, self.W[0] @ h + self.B[0])   # Applies ReLu.
             x1s.append(x1)

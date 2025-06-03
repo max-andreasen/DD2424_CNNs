@@ -78,9 +78,6 @@ class TestCNN(unittest.TestCase):
         self.assertEqual(outputs['x1'].shape, self.x1.shape)
         self.assertEqual(outputs['h'].shape, self.conv_flat.shape)
 
-        print(outputs['h'][:10, 0])
-        print(self.conv_flat[:10, 0])
-
         np.testing.assert_allclose(outputs['h'], self.conv_flat, rtol=1e-5, atol=1e-8)
         np.testing.assert_allclose(outputs['x1'], self.x1, rtol=1e-5, atol=1e-8)
         np.testing.assert_allclose(outputs['P'], self.P, rtol=1e-5, atol=1e-8)

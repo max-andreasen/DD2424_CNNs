@@ -1,6 +1,7 @@
 import unittest
 import numpy as np
 from assignment_3 import CNN
+from torch_gradient_computations import ComputeGradsWithTorch
 
 class TestCNN(unittest.TestCase):
     data = np.load('debug_info.npz')
@@ -103,11 +104,6 @@ class TestCNN(unittest.TestCase):
 
     # BACKWARDS PASS
     def test_backwards_pass(self):
-        print(self.W1.shape)
-        print(self.W2.shape)
-        print(self.b1.shape)
-        print(self.b2.shape)
-
         outputs = self.cnn.backwards_pass(self.X, self.Y)
         self.assertEqual(outputs['grad_Fs_flat'].shape, self.grad_Fs_flat.shape)
         self.assertEqual(outputs['grad_W1'].shape, self.grad_W1.shape)
@@ -117,6 +113,25 @@ class TestCNN(unittest.TestCase):
         np.testing.assert_allclose(outputs['grad_W2'], self.grad_W2, rtol=1e-5, atol=1e-8)
         np.testing.assert_allclose(outputs['grad_Fs_flat'], self.grad_Fs_flat, rtol=1e-5, atol=1e-8)
 
+    def test_backwards_torch(self):
+        network_params = {
+            'W': [self.W1, self.W2],
+            'b': [self.b1, self.b2],
+            'Fs': np.array(self.Fs),
+            'stride': self.stride,
+            'MX': self.MX,
+            'conv_out': self.conv_flat
+        }
+        grads = ComputeGradsWithTorch(self.X, self.y, network_params)
+        self.assertEqual(grads['W'][0].shape, self.W1.shape)
+        self.assertEqual(grads['W'][1].shape, self.W2.shape)
+        self.assertEqual(grads['b'][0].shape, self.b1.shape)
+        self.assertEqual(grads['b'][1].shape, self.b2.shape)
+        self.assertEqual(grads['Fs'].shape, self.grad_Fs_flat.shape)
+
+        np.testing.assert_allclose(grads['W'][0], self.grad_W1, rtol=1e-5, atol=1e-8)
+        np.testing.assert_allclose(grads['W'][1], self.grad_W2, rtol=1e-5, atol=1e-8)
+        np.testing.assert_allclose(grads['Fs'], self.grad_Fs_flat, rtol=1e-5, atol=1e-8)
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-import torch.nn.functional as F
 
 def ComputeGradsWithTorch(X, y, network_params):
     '''
@@ -20,7 +19,8 @@ def ComputeGradsWithTorch(X, y, network_params):
 
     L = len(network_params['W'])
     stride = network_params['stride']
-    n_f = network_params['Fs'].shape(-1) # The number of filters
+    print(type(network_params['Fs']))
+    n_f = network_params['Fs'].shape[-1] # The number of filters
     n_p = (X.shape[0] // stride) ** 2
     batch_size = X.shape[-1]
 
@@ -33,7 +33,7 @@ def ComputeGradsWithTorch(X, y, network_params):
         W[i] = torch.tensor(network_params['W'][i], requires_grad=True)
         b[i] = torch.tensor(network_params['b'][i], requires_grad=True)
 
-    Fs = torch.from_numpy(network_params['Fs'])
+    Fs = torch.tensor(network_params['Fs'], requires_grad=True)
     MX = torch.from_numpy(network_params['MX'])
 
    # For debugging / checking correct outputs
@@ -43,17 +43,16 @@ def ComputeGradsWithTorch(X, y, network_params):
     apply_relu = torch.nn.ReLU()
     apply_softmax = torch.nn.Softmax(dim=0)
 
-    filters_flat = Fs.reshape((stride * stride * 3, n_f), order='C')
-    filters_flat = torch.from_numpy(filters_flat)
+    filters_flat = Fs.reshape((stride * stride * 3, n_f))
 
     # The FORWARD PASS
     conv_outputs_mat = torch.einsum('ijn,jl->iln', MX, filters_flat)
     h = apply_relu( conv_outputs_mat.reshape( (n_p*n_f, batch_size) ) ) # Also denoted as conv_flat
-    assert h.shape == (h.shape[0])
+    #assert h.shape == (h.shape[0])
     assert torch.allclose(h, conv_flat_np)
 
-    x1 = apply_relu( torch.matmul(W[0],  h + b[0]) )
-    scores = torch.matmul(W[1], x1 + b[1])
+    x1 = apply_relu( torch.matmul(W[0],  h) + b[0] )
+    scores = torch.matmul(W[1], x1) + b[1]
 
     # apply SoftMax to each column of scores     
     P = apply_softmax(scores)
@@ -71,5 +70,6 @@ def ComputeGradsWithTorch(X, y, network_params):
     for i in range(L):
         grads['W'][i] = W[i].grad.numpy()
         grads['b'][i] = b[i].grad.numpy()
+    grads['Fs'] = Fs.grad.view(-1, n_f).numpy()
 
     return grads

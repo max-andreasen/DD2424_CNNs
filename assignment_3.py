@@ -10,19 +10,21 @@ import numpy as np
 import matplotlib.pyplot as plt
 import time
 import pickle
-
-from tenacity import retry_if_result
+import os
 
 
 class CNN:
     '''
     The class is currently built around handling square images,
     where WIDTH == HEIGHT.
+    It is also HARDCODED for 2 LAYERS.
     '''
 
     def __init__(self, X, Y, y, m=100, lr=0.01, lam=0, stride=2, n_batches=1,
                  W=None, B=None, filters=None, n_filters=2, n_hidden=10,
                  init_MX=True):
+
+        os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
         self.X = X                  # X is the dataset consisting of images, y labels.
         self.Y = Y
@@ -30,32 +32,33 @@ class CNN:
 
         self.width = X.shape[0]
         self.height = X.shape[1]
+        if len(X.shape) > 3:        # Only has a depth in the scenario with shape (W, H, depth, N).
+            self.depth = X.shape[2]
+        else:
+            self.depth = 1
 
-        # self.depth = X.shape[2]
         self.n_images = X.shape[-1]
         self.batch_size = self.n_images // n_batches
 
         # Network parameters.
-        self.L = 2                          # I hardcode a 2 layer network for simplicity.
-        self.m = m                          # Hidden layer dimensions (also referred to as 'd').
         self.K = self.Y.shape[0]            # The number of classes.
-        self.hidden_dim = n_hidden          # The number of neuron in the hidden layer.
+        self.hidden_dim = n_hidden          # Hidden layer dimensions (also referred to as 'd').
 
         # Network parameters
         self.lr = lr                        # The initial learning rate of the model.
         self.lr_min = 0
         self.lr_max = 1
-        self.lam = lam
+        self.lam = lam                      # Regularization term 'lambda'.
 
         # Weights and parameters
-        self.grads = {}
+        self.grads = {}                     # Dict with elements 'W1', 'W2', 'b1', 'b2' and 'Fs'.
 
         # CNN parameters
-        self.stride = stride            # Also referred to as 'f'.
+        self.stride = stride                # Also referred to as 'f'.
         self.filters = filters if filters is not None else (
-            self.he_init((self.stride, self.stride, 3, n_filters))) # shape (f, f, 3, n_f)
-        self.n_f = self.filters.shape[-1]                   # Could also use 'n_filters', but unclear if 'filters' is given.
-        self.n_p = (self.width // self.stride) ** 2         # Number of sub-patches to which the filter is applied.
+            self.he_init((self.stride, self.stride, 3, n_filters)))     # shape (f, f, 3, n_f)
+        self.n_f = self.filters.shape[-1]               # Could also use 'n_filters', but unclear if 'filters' is given.
+        self.n_p = (self.width // self.stride) ** 2     # Number of sub-patches to which the filter is applied.
         self.filters_flat = self.filters.reshape( (self.stride * self.stride * 3, self.n_f), order='C')
 
         # INITIALIZATIONS
@@ -148,7 +151,6 @@ class CNN:
     # -----------------------------------------------
     def make_prediction(self):
         return
-
 
 
     def forward_efficient(self, X_batch, return_params=False):
@@ -273,9 +275,9 @@ def read_data(filename):
 
     return X, Y, y
 
-def preprocess_data(X_train, X_val, X_test):
+def preprocess_data(X_train, X_val, X_test, img_shape):
     # Normalizes the data.
-    mean = np.mean(X_train, axis=1).reshape(X_train.shape[0], 1)
+    mean = np.mean(X_train, axis=1).reshape (X_train.shape[0], 1)
     std = np.std(X_train, axis=1).reshape(X_train.shape[0], 1)
 
     # Normalize
@@ -283,9 +285,25 @@ def preprocess_data(X_train, X_val, X_test):
     X_val = (X_val - mean) / std
     X_test = (X_test - mean) / std
 
+    X_train = X_train.reshape(img_shape)
+
     return X_train, X_val, X_test
 
 
 if __name__ == "__main__":
-    X, Y, y = read_data('data_batch_1')
+    print("Running main...")
+    X_train, Y_train, y_train = read_data('data_batch_1')
+    Y_train = Y_train[:, :100]
+    X_train = X_train[:, :100]
+
+    X_val, Y_val, y_val = read_data('data_batch_2')
+    X_test, Y_test, y_test = read_data('data_batch_3')
+
+    X_train, X_val, X_test = preprocess_data(X_train, X_val, X_test, (32, 32, 3, X_train.shape[-1]))
+    print(X_train.shape)
+
+    cnn = CNN(X=X_train, Y=Y_train, y=y_train)
+    grads = cnn.backwards_pass(X_train, Y_train)
+
+    print(grads)
 

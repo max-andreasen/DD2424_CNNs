@@ -9,6 +9,9 @@ In this assignment the aim is to construct and implement a Convolutional Neural 
 import numpy as np
 import matplotlib.pyplot as plt
 import time
+import pickle
+
+from tenacity import retry_if_result
 
 
 class CNN:
@@ -18,7 +21,7 @@ class CNN:
     '''
 
     def __init__(self, X, Y, y, m=100, lr=0.01, lam=0, stride=2, n_batches=1,
-                 W=None, B=None, filters=None, n_filters=2,
+                 W=None, B=None, filters=None, n_filters=2, n_hidden=10,
                  init_MX=True):
 
         self.X = X                  # X is the dataset consisting of images, y labels.
@@ -33,12 +36,13 @@ class CNN:
         self.batch_size = self.n_images // n_batches
 
         # Network parameters.
-        self.L = 2                          # We hardcode a 2 layer network for simplicity.
+        self.L = 2                          # I hardcode a 2 layer network for simplicity.
         self.m = m                          # Hidden layer dimensions (also referred to as 'd').
         self.K = self.Y.shape[0]            # The number of classes.
+        self.hidden_dim = n_hidden          # The number of neuron in the hidden layer.
 
         # Network parameters
-        self.lr = lr                # The initial learning rate of the model.
+        self.lr = lr                        # The initial learning rate of the model.
         self.lr_min = 0
         self.lr_max = 1
         self.lam = lam
@@ -48,26 +52,40 @@ class CNN:
 
         # CNN parameters
         self.stride = stride            # Also referred to as 'f'.
-        self.filters = filters if filters is not None else np.zeros((self.stride, self.stride, 3, n_filters)) # shape (f, f, 3)
+        self.filters = filters if filters is not None else (
+            self.he_init((self.stride, self.stride, 3, n_filters))) # shape (f, f, 3, n_f)
         self.n_f = self.filters.shape[-1]                   # Could also use 'n_filters', but unclear if 'filters' is given.
-        self.n_p = (self.width // self.stride) ** 2     # Number of sub-patches to which the filter is applied.
+        self.n_p = (self.width // self.stride) ** 2         # Number of sub-patches to which the filter is applied.
         self.filters_flat = self.filters.reshape( (self.stride * self.stride * 3, self.n_f), order='C')
 
-        # Initializes variables
+        # INITIALIZATIONS
         if init_MX:
             self.MX = self.construct_MX(self.X)
         else:
             self.MX = None
-
-        self.W = W if W is not None else [None] * 2
-        self.B = B if B is not None else [None] * 2
+        '''
+        These parameters are HARDCODED for 2 LAYERS. 
+        Also, W1.shape[1] is passed as an input variable. 
+        TODO: In the future, this value can be calculated based on parameters of the netwrok. 
+        '''
+        self.W = W if W is not None else (
+            [self.he_init((self.hidden_dim, 128)), self.he_init((self.K, self.hidden_dim)), ])
+        self.B = B if B is not None else(
+            [np.zeros((self.hidden_dim, 1)), np.zeros( (self.K, 1))] )
 
 
     # -----------------------------------------------
     #  Helper functions
     # -----------------------------------------------
-    def process_data(self, file):
-        return
+    def he_init(self, shape):
+        if len(shape) == 2:             # The weights (W1 and W2).
+            fan_in = shape[1]
+        elif len(shape) == 4:           # The filter.
+            fan_in = shape[0] * shape[1] * shape[2] # Considering shape[3] is n_f.
+        else:
+            raise ValueError('Invalid shape in he_init.')
+        std = np.sqrt(2.0 / fan_in)     # According to the 'He initialization' equation.
+        return  np.random.randn(*shape) * std
 
     def softmax(self, s):
         e_x = np.exp(s - np.max(s, axis=0, keepdims=True))
@@ -124,6 +142,7 @@ class CNN:
 
 
 
+
     # -----------------------------------------------
     #  Network computations
     # -----------------------------------------------
@@ -154,7 +173,6 @@ class CNN:
                 'x1': np.expand_dims(x1, axis=0),
             }
         return P
-
 
 
     def forward_pass(self, X_batch, return_params=False):
@@ -193,7 +211,6 @@ class CNN:
         return P
 
 
-
     def backwards_pass(self, X_batch, Y_batch):
         outputs = self.forward_efficient(X_batch, return_params=True)
         P = outputs['P']
@@ -223,10 +240,52 @@ class CNN:
         }
 
 
-
     def train(self):
         return
+# -----------------------------------------------
+    # END OF CLASS METHODS
+
+
+
+
+# TODO: Re-write this function into a cleaner version that can handle ALL batches as well.
+def read_data(filename):
+    # Loads a batch of training data.
+    try:
+        cifar_dir = './Datasets/cifar-10-batches-py/'
+        with open(cifar_dir + filename, 'rb') as fo:
+            dict = pickle.load(fo, encoding='bytes')
+    except:
+        cifar_dir = '/Users/maxandreasen/GitHub/DD2424_CNNs/Datasets/cifar-10-batches-py'
+        with open(cifar_dir + filename, 'rb') as fo:
+            dict = pickle.load(fo, encoding='bytes')
+
+    # Extract the image data and cast to float from the dict dictionary
+    y = np.array(dict[b'labels'])
+    k = len(set(y))
+    Y = np.zeros((k, len(y)), dtype=np.float64)
+    for i in range(Y.shape[1]):
+        label = y[i]
+        Y[label, i] = 1.0
+
+    X = dict[b'data'].astype(np.float64) / 255.0  # RGB pixel values max at 255, making entries between 0 and 1.
+    X = X.transpose()
+
+    return X, Y, y
+
+def preprocess_data(X_train, X_val, X_test):
+    # Normalizes the data.
+    mean = np.mean(X_train, axis=1).reshape(X_train.shape[0], 1)
+    std = np.std(X_train, axis=1).reshape(X_train.shape[0], 1)
+
+    # Normalize
+    X_train = (X_train - mean) / std
+    X_val = (X_val - mean) / std
+    X_test = (X_test - mean) / std
+
+    return X_train, X_val, X_test
 
 
 if __name__ == "__main__":
-    cnn = CNN()
+    X, Y, y = read_data('data_batch_1')
+

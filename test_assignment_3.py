@@ -103,6 +103,11 @@ class TestCNN(unittest.TestCase):
 
     # BACKWARDS PASS
     def test_backwards_pass(self):
+        print(self.W1.shape)
+        print(self.W2.shape)
+        print(self.b1.shape)
+        print(self.b2.shape)
+
         outputs = self.cnn.backwards_pass(self.X, self.Y)
         self.assertEqual(outputs['grad_Fs_flat'].shape, self.grad_Fs_flat.shape)
         self.assertEqual(outputs['grad_W1'].shape, self.grad_W1.shape)

@@ -1,35 +1,65 @@
 import torch
+import numpy as np
+import torch.nn.functional as F
 
 def ComputeGradsWithTorch(X, y, network_params):
-    
-    Xt = torch.from_numpy(X)
+    '''
+    :param X: A BATCH of data (32x32x3xN)
+    :param y: Corresponding labels, NOT one-hot encoding.
+    :param network_params:
+        W and b are lists of numpy arrays.
+        Fs is a numpy array.
+        MX is a numpy array.
+        Stride is the stride.
+        conv_out is the output from the convolution.
+    :return:
+    '''
+
+    X = torch.from_numpy(X)
+    y = torch.from_numpy(y)
 
     L = len(network_params['W'])
+    stride = network_params['stride']
+    n_f = network_params['Fs'].shape(-1) # The number of filters
+    n_p = (X.shape[0] // stride) ** 2
+    batch_size = X.shape[-1]
 
-    # will be computing the gradient w.r.t. these parameters    
+    print(f"n_f = {n_f}")
+
+    # Re-constructs the weights and biases to torch tensors.
     W = [None] * L
-    b = [None] * L    
+    b = [None] * L
     for i in range(len(network_params['W'])):
         W[i] = torch.tensor(network_params['W'][i], requires_grad=True)
-        b[i] = torch.tensor(network_params['b'][i], requires_grad=True)        
+        b[i] = torch.tensor(network_params['b'][i], requires_grad=True)
+
+    Fs = torch.from_numpy(network_params['Fs'])
+    MX = torch.from_numpy(network_params['MX'])
+
+   # For debugging / checking correct outputs
+    conv_flat_np = torch.from_numpy(network_params['conv_out']) # h
 
     ## give informative names to these torch classes        
     apply_relu = torch.nn.ReLU()
     apply_softmax = torch.nn.Softmax(dim=0)
 
-    #### BEGIN your code ###########################
-    
-    # Apply the scoring function corresponding to equations (1-3) in assignment description 
-    # If X is d x n then the final scores torch array should have size 10 x n 
+    filters_flat = Fs.reshape((stride * stride * 3, n_f), order='C')
+    filters_flat = torch.from_numpy(filters_flat)
 
-    #### END of your code ###########################            
+    # The FORWARD PASS
+    conv_outputs_mat = torch.einsum('ijn,jl->iln', MX, filters_flat)
+    h = apply_relu( conv_outputs_mat.reshape( (n_p*n_f, batch_size) ) ) # Also denoted as conv_flat
+    assert h.shape == (h.shape[0])
+    assert torch.allclose(h, conv_flat_np)
+
+    x1 = apply_relu( torch.matmul(W[0],  h + b[0]) )
+    scores = torch.matmul(W[1], x1 + b[1])
 
     # apply SoftMax to each column of scores     
     P = apply_softmax(scores)
     
     # compute the loss
-    n = X.shape[1]
-    loss = torch.mean(-torch.log(P[y, np.arange(n)]))
+    loss = torch.mean(-torch.log(P[y, np.arange(batch_size)]))
     
     # compute the backward pass relative to the loss and the named parameters 
     loss.backward()

@@ -98,10 +98,6 @@ class CNN:
         if self.MX is None:
             self.MX = self.construct_MX(X_batch)
         assert self.filters_flat.shape == (self.stride * self.stride * 3, self.n_f), f"Filters are of wrong shape: {self.filters_flat.shape}"
-        n_img_batch = X_batch.shape[-1]
-        conv_outputs_mat = np.zeros((self.n_p, self.n_f, n_img_batch))
-        for i in range(n_img_batch):
-            conv_outputs_mat[:, :, i] = np.matmul(self.MX[:, :, i], self.filters_flat)
         conv_outputs_mat = np.einsum('ijn, jl->iln', self.MX, self.filters_flat, optimize=True)
         return conv_outputs_mat
 
@@ -137,8 +133,7 @@ class CNN:
 
 
     def forward_efficient(self, X_batch, return_params=False):
-        assert self.filters_flat.shape == (
-        self.stride * self.stride * 3, self.n_f), f"Filters are of wrong shape: {self.filters_flat.shape}"
+        assert self.filters_flat.shape == (self.stride * self.stride * 3, self.n_f), f"Filters are of wrong shape: {self.filters_flat.shape}"
 
         # NOTE: 'convolve_efficient' also fills MX if MX is empty!
         conv_outputs_mat = self.convolve_efficient(X_batch)

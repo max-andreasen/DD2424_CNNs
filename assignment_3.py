@@ -303,6 +303,9 @@ class CNN:
 
         batch_losses = []
 
+        #TODO: Implement testing gradients with torch.
+        #TODO: Implement split into validation set for evaluating parameters each batch.
+        #TODO: Implement cyclic learning rates.
         for i in range(epochs):
             losses = []
             indices = np.random.permutation(N)
@@ -436,6 +439,9 @@ if __name__ == "__main__":
 
     cnn = CNN(X=X_train, Y=Y_train, y=y_train, n_batches=100, n_filters=10, stride=4, n_hidden=50)
     cnn.train(X_train, Y_train, y_train)
+
+    #TODO: Fix so that the test data can run through the forward pass.
+    # Might have something to do with the MX matrix. 
     P = cnn.forward_pass_legacy(X_test)
     print(cnn.accuracy(y_test, P))
 

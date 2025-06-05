@@ -107,7 +107,7 @@ class Neural_Network:
 
     def compute_cost(self, Y, P):
         '''
-        Calculates the cost function (J), which in this assignment is mainly used for plotting pursposes. 
+        Calculates the cost function (J), which in this assignment is mainly used for plotting purposes.
         '''
         l_cross = self.compute_loss(Y, P)
         reg_term = np.sum(self.W[0]**2) + np.sum(self.W[1]**2)

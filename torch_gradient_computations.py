@@ -19,12 +19,9 @@ def ComputeGradsWithTorch(X, y, network_params):
 
     L = len(network_params['W'])
     stride = network_params['stride']
-    print(type(network_params['Fs']))
     n_f = network_params['Fs'].shape[-1] # The number of filters
     n_p = (X.shape[0] // stride) ** 2
     batch_size = X.shape[-1]
-
-    print(f"n_f = {n_f}")
 
     # Re-constructs the weights and biases to torch tensors.
     W = [None] * L

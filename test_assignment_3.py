@@ -80,8 +80,8 @@ class TestCNN(unittest.TestCase):
         np.testing.assert_allclose(self.MX, out_MX, rtol=1e-5, atol=1e-8)
 
     # FORWARD PASSES
-    def test_forward_pass(self):
-        outputs = self.cnn.forward_pass(self.X, return_params=True)
+    def test_forward_pass_legacy(self):
+        outputs = self.cnn.forward_pass_legacy(self.X, return_params=True)
         self.assertEqual(outputs['P'].shape, self.P.shape)
         self.assertEqual(outputs['P'].dtype, self.P.dtype)
         self.assertEqual(outputs['x1'].shape, self.x1.shape)
@@ -92,7 +92,7 @@ class TestCNN(unittest.TestCase):
         np.testing.assert_allclose(outputs['P'], self.P, rtol=1e-5, atol=1e-8)
 
     def test_forward_efficient(self):
-        outputs = self.cnn.forward_efficient(self.X, return_params=True)
+        outputs = self.cnn.forward(self.X, return_params=True)
         self.assertEqual(outputs['P'].shape, self.P.shape)
         self.assertEqual(outputs['P'].dtype, self.P.dtype)
         self.assertEqual(outputs['x1'].shape, self.x1.shape)
@@ -108,10 +108,14 @@ class TestCNN(unittest.TestCase):
         self.assertEqual(outputs['grad_Fs_flat'].shape, self.grad_Fs_flat.shape)
         self.assertEqual(outputs['grad_W1'].shape, self.grad_W1.shape)
         self.assertEqual(outputs['grad_W2'].shape, self.grad_W2.shape)
+        self.assertEqual(outputs['grad_b1'].shape, self.grad_b1.shape)
+        self.assertEqual(outputs['grad_b2'].shape, self.grad_b2.shape)
 
+        np.testing.assert_allclose(outputs['grad_Fs_flat'], self.grad_Fs_flat, rtol=1e-5, atol=1e-8)
         np.testing.assert_allclose(outputs['grad_W1'], self.grad_W1, rtol=1e-5, atol=1e-8)
         np.testing.assert_allclose(outputs['grad_W2'], self.grad_W2, rtol=1e-5, atol=1e-8)
-        np.testing.assert_allclose(outputs['grad_Fs_flat'], self.grad_Fs_flat, rtol=1e-5, atol=1e-8)
+        np.testing.assert_allclose(outputs['grad_b1'], self.grad_b1, rtol=1e-5, atol=1e-8)
+        np.testing.assert_allclose(outputs['grad_b2'], self.grad_b2, rtol=1e-5, atol=1e-8)
 
     def test_backwards_torch(self):
         network_params = {

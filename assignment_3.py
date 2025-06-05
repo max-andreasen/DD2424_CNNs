@@ -11,6 +11,10 @@ import matplotlib.pyplot as plt
 import time
 import pickle
 import os
+from pathlib import Path
+from tqdm import tqdm
+
+from gensim.similarities.fastss import indexkeys
 
 
 class CNN:
@@ -38,7 +42,8 @@ class CNN:
             self.depth = 1
 
         self.n_images = X.shape[-1]
-        self.batch_size = self.n_images // n_batches
+        self.n_batches = n_batches
+        self.batch_size = self.n_images // self.n_batches
 
         # Network parameters.
         self.K = self.Y.shape[0]            # The number of classes.
@@ -56,10 +61,10 @@ class CNN:
         # CNN parameters
         self.stride = stride                # Also referred to as 'f'.
         self.filters = filters if filters is not None else (
-            self.he_init((self.stride, self.stride, 3, n_filters)))     # shape (f, f, 3, n_f)
+            self.he_init((self.stride, self.stride, self.depth, n_filters)))     # shape (f, f, 3, n_f)
         self.n_f = self.filters.shape[-1]               # Could also use 'n_filters', but unclear if 'filters' is given.
         self.n_p = (self.width // self.stride) ** 2     # Number of sub-patches to which the filter is applied.
-        self.filters_flat = self.filters.reshape( (self.stride * self.stride * 3, self.n_f), order='C')
+        self.filters_flat = self.filters.reshape( (self.stride * self.stride * self.depth, self.n_f), order='C')
 
         # INITIALIZATIONS
         if init_MX:
@@ -72,9 +77,10 @@ class CNN:
         TODO: In the future, this value can be calculated based on parameters of the netwrok. 
         '''
         self.W = W if W is not None else (
-            [self.he_init((self.hidden_dim, 128)), self.he_init((self.K, self.hidden_dim)), ])
-        self.B = B if B is not None else(
+            [self.he_init((self.hidden_dim, self.n_f*self.n_p)), self.he_init((self.K, self.hidden_dim)), ])
+        self.b = B if B is not None else(
             [np.zeros((self.hidden_dim, 1)), np.zeros( (self.K, 1))] )
+        self.b_conv = np.zeros((self.n_f, 1))
 
 
     # -----------------------------------------------
@@ -94,8 +100,28 @@ class CNN:
         e_x = np.exp(s - np.max(s, axis=0, keepdims=True))
         return e_x / np.sum(e_x, axis=0, keepdims=True)
 
-    def cross_entropy_loss(self):
-        return
+    def loss(self, Y, P):
+        '''
+        Computes the cross entropy loss for the one-hot encoded label vector,
+        and the probability distribution P which is calculated by the network.
+        '''
+        eps = 1e-15
+        l_cross = -np.sum( Y * np.log(P + eps)) / Y.shape[1] # Eq. 6.
+        return l_cross
+
+    def cost(self, Y, P):
+        '''
+        Calculates the cost function (J), which in this assignment is mainly used for plotting purposes.
+        '''
+        l_cross = self.loss(Y, P)
+        reg_term = np.sum(self.W[0]**2) + np.sum(self.W[1]**2)
+        return l_cross + ( self.lam * reg_term)
+
+    def accuracy(self, y, P):
+        pred_labels = np.argmax(P, axis=0)
+        comparison_vec = (pred_labels == y).astype(int)
+        acc = np.mean(comparison_vec)
+        return acc
 
     def convolve(self, X, conv_filter, stride=None):
         '''
@@ -128,10 +154,11 @@ class CNN:
         :param X:
         :return:
         '''
-        print(f"Calculating MX...")
+        #print(f"Calculating MX...")
+        N = X.shape[-1]
         start = time.time()
-        MX = np.zeros((self.n_p, self.stride * self.stride * 3, self.n_images))
-        for i in range(self.n_images):
+        MX = np.zeros((self.n_p, self.stride * self.stride * 3, N))
+        for i in range(N):
             X_img = X[:, :, :, i]
             patch_id = 0
             for r in range(int(np.sqrt(self.n_p))):
@@ -140,7 +167,7 @@ class CNN:
                     MX[patch_id, :, i] = X_patch.reshape((1, self.stride * self.stride * 3), order='C')
                     patch_id += 1
         end = time.time()
-        print(f"MX calculated in {end - start} seconds.")
+        #print(f"MX calculated in {end - start} seconds.")
         return MX
 
 
@@ -153,7 +180,7 @@ class CNN:
         return
 
 
-    def forward_efficient(self, X_batch, return_params=False):
+    def forward(self, X_batch, return_params=False):
         assert self.filters_flat.shape == (self.stride * self.stride * 3, self.n_f), f"Filters are of wrong shape: {self.filters_flat.shape}"
 
         # NOTE: 'convolve_efficient' also fills MX if MX is empty!
@@ -163,8 +190,8 @@ class CNN:
         conv_flat = np.fmax(conv_outputs_mat.reshape( (self.n_p*self.n_f, self.batch_size), order='C' ), 0 )
 
         # Applies the connected layers and activates through ReLu.
-        x1 = np.maximum(0, self.W[0] @ conv_flat + self.B[0])
-        s = (self.W[1] @ x1 + self.B[1])
+        x1 = np.maximum(0, self.W[0] @ conv_flat + self.b[0])
+        s = (self.W[1] @ x1 + self.b[1])
         assert s.shape == (self.K, self.batch_size), f"S is of wrong size in forward pass: {s.shape}"
         P = self.softmax(s)
 
@@ -177,7 +204,7 @@ class CNN:
         return P
 
 
-    def forward_pass(self, X_batch, return_params=False):
+    def forward_pass_legacy(self, X_batch, return_params=False):
         hs = []
         Ps = []
         x1s = []
@@ -194,9 +221,9 @@ class CNN:
             h[0::2] = H_all[:, :, 0].reshape(-1, 1)
             h[1::2] = H_all[:, :, 1].reshape(-1, 1)
             assert h.shape == (self.n_f * self.n_p, 1), f"h is of wrong shape in forward pass: {h.shape}"
-            x1 = np.maximum(0, self.W[0] @ h + self.B[0])   # Applies ReLu.
+            x1 = np.maximum(0, self.W[0] @ h + self.b[0])   # Applies ReLu.
             x1s.append(x1)
-            s = self.W[1] @ x1 + self.B[1]
+            s = self.W[1] @ x1 + self.b[1]
             assert s.shape == (self.K, 1), f"S is of wrong size in forward pass: {s.shape}"
             P = self.softmax(s)
             Ps.append(P)
@@ -213,19 +240,37 @@ class CNN:
         return P
 
 
+
+    def update_params(self, grads):
+        self.W[0] -= self.lr * grads['grad_W1']
+        self.W[1] -= self.lr * grads['grad_W2']
+        self.b[0] -= self.lr * grads['grad_b1']
+        self.b[1] -= self.lr * grads['grad_b2']
+        self.filters_flat -= self.lr * grads['grad_Fs_flat']
+        self.b_conv -= self.lr * grads['grad_b_conv']
+
+
+
     def backwards_pass(self, X_batch, Y_batch):
-        outputs = self.forward_efficient(X_batch, return_params=True)
+        outputs = self.forward(X_batch, return_params=True)
         P = outputs['P']
         x1 = outputs['x1'].squeeze(0)
         h = outputs['h']
 
+        # Adding L2 regularization.
+        reg_W1 = (2 * self.lam * self.W[0])
+        reg_W2 = (2 * self.lam * self.W[1])
+        reg_Fs = (2 * self.lam * self.filters_flat)
+
         G = -(Y_batch-P)
         grad_W2 = (1/self.batch_size) * G @ x1.T
+        grad_b2 = (1 / self.batch_size) * np.sum(G, axis=1, keepdims=True)
 
         G = self.W[1].T @ G
         G = G * (x1 > 0).astype(int)
 
         grad_W1 = (1 / self.batch_size) * G @ h.T
+        grad_b1 = (1 / self.batch_size) * np.sum(G, axis=1, keepdims=True)
 
         G_batch = self.W[0].T @ G
         G_batch = G_batch * (h > 0).astype(int)
@@ -234,46 +279,125 @@ class CNN:
 
         MXt = np.transpose(self.MX, (1, 0, 2))
         grad_Fs_flat = np.einsum('ijn, jln ->il', MXt, GG, optimize=True) / self.batch_size
+        grad_b_conv = np.sum(GG, axis=(0, 2), keepdims=True) / self.batch_size
+        grad_b_conv = grad_b_conv.reshape(self.n_f, 1)
 
         return {
-            'grad_Fs_flat': grad_Fs_flat,
-            'grad_W1': grad_W1,
-            'grad_W2': grad_W2
+            'grad_Fs_flat': grad_Fs_flat + reg_Fs,
+            'grad_W1': grad_W1 + reg_W1,
+            'grad_W2': grad_W2 + reg_W2,
+            'grad_b1': grad_b1,
+            'grad_b2': grad_b2,
+            'grad_b_conv': grad_b_conv
         }
 
 
-    def train(self):
-        return
+    def train(self, X, Y, y, val=0.2, epochs=5, seed=None):
+        '''
+        Takes the data as argument and trains the model parameters.
+        For each epoch it randomly shuffles the data.
+        '''
+        N = X.shape[-1]
+        if seed is None:
+            np.random.seed(seed)
+
+        batch_losses = []
+
+        for i in range(epochs):
+            losses = []
+            indices = np.random.permutation(N)
+
+            for j in tqdm(range(self.n_batches), desc=f"Epoch {i+1}"):
+                if (j+1)*self.batch_size > N:
+                    break
+                batch_idx = indices[j * self.batch_size : (j+1) * self.batch_size]
+                X_batch = X[:, :, :, batch_idx]
+                Y_batch = Y[:, batch_idx]
+                y_batch = y[batch_idx]
+                self.MX = self.construct_MX(X_batch)
+                grads = self.backwards_pass(X_batch, Y_batch)
+                self.update_params(grads)
+
+                P = self.forward(X_batch)
+                loss = self.loss(Y_batch, P)
+                losses.append(loss)
+            P = self.forward(X_batch)
+            print(self.accuracy(y_batch, P))
+            batch_losses.append(np.mean(losses))
+        plt.plot(batch_losses)
+        plt.show()
+
 # -----------------------------------------------
     # END OF CLASS METHODS
 
 
 
 
-# TODO: Re-write this function into a cleaner version that can handle ALL batches as well.
-def read_data(filename):
-    # Loads a batch of training data.
-    try:
-        cifar_dir = './Datasets/cifar-10-batches-py/'
-        with open(cifar_dir + filename, 'rb') as fo:
-            dict = pickle.load(fo, encoding='bytes')
-    except:
-        cifar_dir = '/Users/maxandreasen/GitHub/DD2424_CNNs/Datasets/cifar-10-batches-py'
-        with open(cifar_dir + filename, 'rb') as fo:
-            dict = pickle.load(fo, encoding='bytes')
 
+
+# -----------------------------------------------
+#  DATA HANDLING FUNCTIONS
+# -----------------------------------------------
+def extract_data(pickle_dict):
     # Extract the image data and cast to float from the dict dictionary
-    y = np.array(dict[b'labels'])
+    y = np.array(pickle_dict[b'labels'])
     k = len(set(y))
     Y = np.zeros((k, len(y)), dtype=np.float64)
     for i in range(Y.shape[1]):
         label = y[i]
         Y[label, i] = 1.0
-
-    X = dict[b'data'].astype(np.float64) / 255.0  # RGB pixel values max at 255, making entries between 0 and 1.
+    X = pickle_dict[b'data'].astype(np.float64) / 255.0  # RGB pixel values max at 255, making entries between 0 and 1.
     X = X.transpose()
-
     return X, Y, y
+
+def read_data(path_name, dir=False):
+    '''
+    Can read data from multiple files in a directory,
+    or just one file.
+    :param path_name: Name of file or directory.
+    :param dir: Specifies if the path-name is a directory or not.
+    :return: X, Y, y
+    '''
+
+    if dir:
+        Xs, Ys, ys = [], [], []
+        for file in path_name.iterdir():
+            if file.is_file() and not (file.name.endswith('.html') or file.name.endswith('.meta')):
+                with open(file, 'rb') as fo:
+                    dict = pickle.load(fo, encoding='bytes')
+                X, Y, y = extract_data(dict)
+                Xs.append(X)
+                Ys.append(Y)
+                ys.append(y)
+        return np.concatenate(Xs, axis=1), np.concatenate(Ys, axis=1), np.concatenate(ys, axis=0)
+    else:
+        # No error handling so make sure it is the correct path!
+        with open(path_name, 'rb') as fo:
+            dict = pickle.load(fo, encoding='bytes')
+        return extract_data(dict)
+
+def split(X, Y, y, train=0.8, val=0.2, seed=None):
+    assert train+val <= 1.0, f"Train and validation cannot exceed 1.0."
+    test = 1.0 - train - val
+    N = X.shape[-1]
+    indices = np.arange(N)
+    if seed is not None:
+        np.random.seed(seed)
+    np.random.shuffle(indices)
+
+    n_train = int(N * train)
+    n_val = int(N * val)
+    n_test = N - n_train - n_val
+
+    train_idx = indices[:n_train]
+    val_idx = indices[n_train:n_train+n_val]
+    test_idx = indices[n_train+n_val:]
+
+    return (
+        X[:, train_idx], Y[:, train_idx], y[train_idx],
+        X[:, val_idx], Y[:, val_idx], y[val_idx],
+        X[:, test_idx], Y[:, test_idx], y[test_idx]
+    )
 
 def preprocess_data(X_train, X_val, X_test, img_shape):
     # Normalizes the data.
@@ -290,20 +414,29 @@ def preprocess_data(X_train, X_val, X_test, img_shape):
     return X_train, X_val, X_test
 
 
+
+# -----------------------------------------------
+#  MAIN
+# -----------------------------------------------
 if __name__ == "__main__":
     print("Running main...")
-    X_train, Y_train, y_train = read_data('data_batch_1')
-    Y_train = Y_train[:, :100]
-    X_train = X_train[:, :100]
 
-    X_val, Y_val, y_val = read_data('data_batch_2')
-    X_test, Y_test, y_test = read_data('data_batch_3')
+    file_path_dir = Path("Datasets/cifar-10-batches-py")
+    file_path_batch = file_path_dir / 'data_batch_1'
+
+    X_train, Y_train, y_train = read_data(file_path_batch)
+    Y_train = Y_train
+    X_train = X_train
+
+    X_val, Y_val, y_val = read_data(file_path_dir / 'data_batch_2')
+    X_test, Y_test, y_test = read_data(file_path_dir / 'data_batch_3')
 
     X_train, X_val, X_test = preprocess_data(X_train, X_val, X_test, (32, 32, 3, X_train.shape[-1]))
     print(X_train.shape)
 
-    cnn = CNN(X=X_train, Y=Y_train, y=y_train)
-    grads = cnn.backwards_pass(X_train, Y_train)
+    cnn = CNN(X=X_train, Y=Y_train, y=y_train, n_batches=100, n_filters=10, stride=4, n_hidden=50)
+    cnn.train(X_train, Y_train, y_train)
+    P = cnn.forward_pass_legacy(X_test)
+    print(cnn.accuracy(y_test, P))
 
-    print(grads)
 

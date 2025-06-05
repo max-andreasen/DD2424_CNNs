@@ -427,6 +427,9 @@ if __name__ == "__main__":
     file_path_dir = Path("Datasets/cifar-10-batches-py")
     file_path_batch = file_path_dir / 'data_batch_1'
 
+    #TODO: Implement reading in the whole data set
+    # and the test set seperately from 'test_batch'.
+
     X_train, Y_train, y_train = read_data(file_path_batch)
     Y_train = Y_train
     X_train = X_train
@@ -441,7 +444,7 @@ if __name__ == "__main__":
     cnn.train(X_train, Y_train, y_train)
 
     #TODO: Fix so that the test data can run through the forward pass.
-    # Might have something to do with the MX matrix. 
+    # Might have something to do with the MX matrix.
     P = cnn.forward_pass_legacy(X_test)
     print(cnn.accuracy(y_test, P))
 

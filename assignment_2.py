@@ -43,7 +43,7 @@ class Neural_Network:
         self.eta = eta # the learning rate
         self.eta_max = eta_max
         self.eta_min = eta_min
-        self.step_size = 0 # the step size for dynamic updating of eta.
+        self.step_size = 0.5 # the step size for dynamic updating of eta.
 
         # For plotting purposes. Saves the losses & costs of the latest run
         self.losses_training = [] # by epochs

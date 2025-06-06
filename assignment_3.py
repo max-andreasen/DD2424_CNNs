@@ -13,8 +13,7 @@ import pickle
 import os
 from pathlib import Path
 from tqdm import tqdm
-
-from gensim.similarities.fastss import indexkeys
+from torch_gradient_computations import ComputeGradsWithTorch
 
 
 class CNN:
@@ -24,9 +23,9 @@ class CNN:
     It is also HARDCODED for 2 LAYERS.
     '''
 
-    def __init__(self, X, Y, y, m=100, lr=0.01, lam=0, stride=2, n_batches=1,
-                 W=None, B=None, filters=None, n_filters=2, n_hidden=10,
-                 init_MX=True):
+    def __init__(self, X, Y, y, lr=0.01, lr_min=0.0005, lr_max=0.01, lam=0.003,
+                 stride=2, n_batches=1, W=None, B=None, filters=None, n_filters=2,
+                 step_size=800, n_hidden=10, init_MX=True):
 
         os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -51,9 +50,10 @@ class CNN:
 
         # Network parameters
         self.lr = lr                        # The initial learning rate of the model.
-        self.lr_min = 0
-        self.lr_max = 1
+        self.lr_min = lr_min
+        self.lr_max = lr_max
         self.lam = lam                      # Regularization term 'lambda'.
+        self.step_size = step_size          # The step size used for cyclic learning rates.
 
         # Weights and parameters
         self.grads = {}                     # Dict with elements 'W1', 'W2', 'b1', 'b2' and 'Fs'.
@@ -170,6 +170,20 @@ class CNN:
         #print(f"MX calculated in {end - start} seconds.")
         return MX
 
+    def compare_grads_with_torch(self, X, y, grads):
+        network_params = {
+            'W': [self.W[0], self.W[1]],
+            'b': [self.b[0], self.b[1]],
+            'Fs': np.array(self.filters),
+            'stride': self.stride,
+            'MX': self.MX,
+        }
+        torch_grads = ComputeGradsWithTorch(X, y, network_params)
+        is_w_grads = np.allclose(torch_grads['W'][0], grads['grad_W1']) and np.allclose(torch_grads['W'][1], grads['grad_W2'])
+        is_Fs_grad = np.allclose(torch_grads['b'][0], grads['grad_b1']) and np.allclose(torch_grads['b'][1], grads['grad_b2'])
+        if is_w_grads and is_Fs_grad:
+            print("Grads are OK.")
+
 
 
 
@@ -240,7 +254,6 @@ class CNN:
         return P
 
 
-
     def update_params(self, grads):
         self.W[0] -= self.lr * grads['grad_W1']
         self.W[1] -= self.lr * grads['grad_W2']
@@ -251,7 +264,7 @@ class CNN:
 
 
 
-    def backwards_pass(self, X_batch, Y_batch):
+    def backwards(self, X_batch, Y_batch):
         outputs = self.forward(X_batch, return_params=True)
         P = outputs['P']
         x1 = outputs['x1'].squeeze(0)
@@ -292,7 +305,33 @@ class CNN:
         }
 
 
-    def train(self, X, Y, y, val=0.2, epochs=5, seed=None):
+    def set_eta(self, t):
+        '''
+        Upadtes the learning-rate (ETA), based on the internally set cycle.
+        t: int
+            The number gets a +1 every time the model updates the gradients.
+        '''
+
+        l = int(np.floor(t / (2 * self.step_size))) # l is the number of whole cycles that has been.
+
+        bound_1 = (2*l) * self.step_size
+        bound_2 = (2*l + 1) * self.step_size
+
+        # eq. 14.
+        if (bound_1 <= t) and (bound_2 > t):
+            eta_t = self.lr_min + ( (t-bound_1)/self.step_size * (self.lr_max - self.lr_min) )
+        # eq. 15.
+        elif (bound_2 <= t) and ( 2*(l+1)*self.step_size > t):
+            eta_t = self.lr_max - ( (t-bound_2) / self.step_size * (self.lr_max-self.lr_min) )
+        else:
+            # Could also raise an error here perhaps?
+            print("The value t is not within any bound. Keeping the current learning rate.")
+            return
+
+        self.lr = eta_t # updates the learning rate
+
+
+    def train(self, X, Y, y, val=0.2, epochs=5, seed=None, k=4, n_cycles=3):
         '''
         Takes the data as argument and trains the model parameters.
         For each epoch it randomly shuffles the data.
@@ -301,33 +340,115 @@ class CNN:
         if seed is None:
             np.random.seed(seed)
 
-        batch_losses = []
+        # Split indices into train and validation sets
+        indices = np.random.permutation(N)
+        n_val = int(N * val)
+        val_idx = indices[:n_val]
+        train_idx = indices[n_val:]
 
-        #TODO: Implement testing gradients with torch.
-        #TODO: Implement split into validation set for evaluating parameters each batch.
-        #TODO: Implement cyclic learning rates.
+        X_val = X[:, :, :, val_idx]
+        Y_val = Y[:, val_idx]
+        y_val = y[val_idx]
+
+        batch_losses_val = []
+        batch_losses_train = []
+        batch_accuracies_train = []
+        batch_accuracies_val = []
+        etas = []
+
+        K = int(N * (1 - val) // self.batch_size)  # The 'new' number of batches after validation assignment.
+        print(K)
+        if self.step_size is None:
+            self.step_size = int(k * K)  # updates the step size
+        print(f"Step size: {self.step_size}")
+
+        total_updates_needed = n_cycles * 2 * self.step_size
+        epochs = int(np.ceil(total_updates_needed / K))
+        print(f"Running for {epochs} epochs.")
+        print(f"t: {total_updates_needed}")
+
+        t = 1                   # The number of steps in the cyclic learning rates.
+
         for i in range(epochs):
-            losses = []
-            indices = np.random.permutation(N)
+            losses_train = []
+            accuracies_train = []
+            train_ids_shuffled = np.random.permutation(train_idx)
 
-            for j in tqdm(range(self.n_batches), desc=f"Epoch {i+1}"):
-                if (j+1)*self.batch_size > N:
-                    break
-                batch_idx = indices[j * self.batch_size : (j+1) * self.batch_size]
+            for j in tqdm(range(K), desc=f"Epoch {i+1}"):
+                if (j+1)*self.batch_size > int(N*(1-val)): break
+                if t > total_updates_needed: break
+
+                batch_idx = train_ids_shuffled[j * self.batch_size : (j+1) * self.batch_size]
                 X_batch = X[:, :, :, batch_idx]
                 Y_batch = Y[:, batch_idx]
                 y_batch = y[batch_idx]
+                self.set_eta(t)
                 self.MX = self.construct_MX(X_batch)
-                grads = self.backwards_pass(X_batch, Y_batch)
+                grads = self.backwards(X_batch, Y_batch)
                 self.update_params(grads)
 
-                P = self.forward(X_batch)
-                loss = self.loss(Y_batch, P)
-                losses.append(loss)
-            P = self.forward(X_batch)
-            print(self.accuracy(y_batch, P))
-            batch_losses.append(np.mean(losses))
-        plt.plot(batch_losses)
+                '''
+                Code for testing the Gradients. Doesn't work with regularization, since it is not implemented into the torch code. 
+                Did test it with lam=0, and it works fine! 
+                if t % 500 == 0:
+                    batch_size = self.batch_size
+                    self.batch_size = X_val.shape[-1]
+                    self.MX = self.construct_MX(X_val)
+                    grads = self.backwards(X_val, Y_val)
+                    self.compare_grads_with_torch(X_val, y_val, grads)
+                    self.batch_size = batch_size
+                '''
+
+                if t % int(self.step_size/4) == 0:
+                    P = self.forward(X_batch)
+                    loss = self.loss(Y_batch, P)
+                    acc_train = self.accuracy(y_batch, P)
+                    losses_train.append(loss)
+                    accuracies_train.append(acc_train)
+
+                t += 1
+                etas.append(self.lr)
+
+            # Need to reconstruct some data for the validation batch.
+            batch_size = self.batch_size
+            self.batch_size = X_val.shape[-1]
+            cnn.MX = cnn.construct_MX(X_val)
+            P_val = self.forward(X_val)
+            val_acc = self.accuracy(y_val, P_val)
+            val_loss = self.loss(Y_val, P_val)
+            self.batch_size = batch_size
+
+            batch_losses_train.append(np.mean(losses_train))
+            batch_losses_val.append(val_loss)
+            batch_accuracies_val.append(val_acc)
+            batch_accuracies_train.append(np.mean(accuracies_train))
+
+        update_steps = np.arange(1, epochs + 1) * K
+
+        # Plot losses
+        plt.figure(figsize=(8, 5))
+        plt.plot(update_steps,batch_losses_train, label='Training Loss')
+        plt.plot(update_steps,batch_losses_val, label='Validation Loss')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss')
+        plt.title('Loss over Epochs')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
+        # Plot accuracies
+        plt.figure(figsize=(8, 5))
+        plt.plot(update_steps,batch_accuracies_train, label='Training Accuracy')
+        plt.plot(update_steps,batch_accuracies_val, label='Validation Accuracy')
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy')
+        plt.title('Accuracy over Epochs')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
+        plt.figure(figsize=(8, 5))
+        plt.plot(etas)
         plt.show()
 
 # -----------------------------------------------
@@ -379,7 +500,7 @@ def read_data(path_name, dir=False):
             dict = pickle.load(fo, encoding='bytes')
         return extract_data(dict)
 
-def split(X, Y, y, train=0.8, val=0.2, seed=None):
+def split(X, Y, y, train=0.8, val=0.2, seed=None, wantTest=False):
     assert train+val <= 1.0, f"Train and validation cannot exceed 1.0."
     test = 1.0 - train - val
     N = X.shape[-1]
@@ -390,17 +511,21 @@ def split(X, Y, y, train=0.8, val=0.2, seed=None):
 
     n_train = int(N * train)
     n_val = int(N * val)
-    n_test = N - n_train - n_val
 
     train_idx = indices[:n_train]
     val_idx = indices[n_train:n_train+n_val]
     test_idx = indices[n_train+n_val:]
-
-    return (
-        X[:, train_idx], Y[:, train_idx], y[train_idx],
-        X[:, val_idx], Y[:, val_idx], y[val_idx],
-        X[:, test_idx], Y[:, test_idx], y[test_idx]
-    )
+    if wantTest:
+        return (
+            X[:, train_idx], Y[:, train_idx], y[train_idx],
+            X[:, val_idx], Y[:, val_idx], y[val_idx],
+            X[:, test_idx], Y[:, test_idx], y[test_idx]
+        )
+    else:
+        return (
+            X[:, train_idx], Y[:, train_idx], y[train_idx],
+            X[:, val_idx], Y[:, val_idx], y[val_idx]
+        )
 
 def preprocess_data(X_train, X_val, X_test, img_shape):
     # Normalizes the data.
@@ -411,8 +536,6 @@ def preprocess_data(X_train, X_val, X_test, img_shape):
     X_train = (X_train - mean) / std
     X_val = (X_val - mean) / std
     X_test = (X_test - mean) / std
-
-    X_train = X_train.reshape(img_shape)
 
     return X_train, X_val, X_test
 
@@ -427,25 +550,25 @@ if __name__ == "__main__":
     file_path_dir = Path("Datasets/cifar-10-batches-py")
     file_path_batch = file_path_dir / 'data_batch_1'
 
-    #TODO: Implement reading in the whole data set
-    # and the test set seperately from 'test_batch'.
+    X, Y, y = read_data(file_path_dir, dir=True)
+    #X_train, Y_train, y_train, X_val, Y_val, y_val = split(X, Y, y)
+    X_test, Y_test, y_test = read_data(file_path_dir / 'test_batch')
 
-    X_train, Y_train, y_train = read_data(file_path_batch)
-    Y_train = Y_train
-    X_train = X_train
-
-    X_val, Y_val, y_val = read_data(file_path_dir / 'data_batch_2')
-    X_test, Y_test, y_test = read_data(file_path_dir / 'data_batch_3')
-
-    X_train, X_val, X_test = preprocess_data(X_train, X_val, X_test, (32, 32, 3, X_train.shape[-1]))
+    X_train, X_val, X_test = preprocess_data(X, X_test, X_test, (32, 32, 3, X.shape[-1]))
+    X_train = X_train.reshape(32,32,3, X_train.shape[-1])
+    X_train = X_train.astype(np.float32)
     print(X_train.shape)
 
-    cnn = CNN(X=X_train, Y=Y_train, y=y_train, n_batches=100, n_filters=10, stride=4, n_hidden=50)
-    cnn.train(X_train, Y_train, y_train)
+    cnn = CNN(X=X_train, Y=Y, y=y, lr_min=1e-5, lr_max=1e-1, lam=0.003, n_batches=100,
+              n_filters=10, stride=4, n_hidden=50, step_size=800, init_MX=False)
+    cnn.train(X_train, Y, y)
 
-    #TODO: Fix so that the test data can run through the forward pass.
-    # Might have something to do with the MX matrix.
-    P = cnn.forward_pass_legacy(X_test)
-    print(cnn.accuracy(y_test, P))
+
+    # Final run of the test data.
+    X_test = X_test.reshape(32,32,3, X_test.shape[-1])
+    cnn.batch_size = X_test.shape[-1]
+    cnn.MX = cnn.construct_MX(X_test)
+    P = cnn.forward(X_test)
+    print(f"Accuracy on test data: {cnn.accuracy(y_test, P)}")
 
 

@@ -10,7 +10,6 @@ def ComputeGradsWithTorch(X, y, network_params):
         Fs is a numpy array.
         MX is a numpy array.
         Stride is the stride.
-        conv_out is the output from the convolution.
     :return:
     '''
 
@@ -33,9 +32,6 @@ def ComputeGradsWithTorch(X, y, network_params):
     Fs = torch.tensor(network_params['Fs'], requires_grad=True)
     MX = torch.from_numpy(network_params['MX'])
 
-   # For debugging / checking correct outputs
-    conv_flat_np = torch.from_numpy(network_params['conv_out']) # h
-
     ## give informative names to these torch classes        
     apply_relu = torch.nn.ReLU()
     apply_softmax = torch.nn.Softmax(dim=0)
@@ -45,8 +41,6 @@ def ComputeGradsWithTorch(X, y, network_params):
     # The FORWARD PASS
     conv_outputs_mat = torch.einsum('ijn,jl->iln', MX, filters_flat)
     h = apply_relu( conv_outputs_mat.reshape( (n_p*n_f, batch_size) ) ) # Also denoted as conv_flat
-    #assert h.shape == (h.shape[0])
-    assert torch.allclose(h, conv_flat_np)
 
     x1 = apply_relu( torch.matmul(W[0],  h) + b[0] )
     scores = torch.matmul(W[1], x1) + b[1]

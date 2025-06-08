@@ -16,15 +16,16 @@ from tqdm import tqdm
 from torch_gradient_computations import ComputeGradsWithTorch
 
 
-def construct_MX(X, stride, n_p):
+def construct_MX(X, stride):
     '''
     THIS FUNCTION ASSUMES A SQUARE IMAGE (WIDTH == HEIGHT).
     :param X:
     :return:
     '''
-    # print(f"Calculating MX...")
+    print(f"Calculating MX...")
     N = X.shape[-1]
     start = time.time()
+    n_p = (X.shape[0] // stride) ** 2  # Number of sub-patches to which the filter is applied.
     MX = np.zeros((n_p, stride * stride * 3, N))
     for i in range(N):
         X_img = X[:, :, :, i]
@@ -35,7 +36,7 @@ def construct_MX(X, stride, n_p):
                 MX[patch_id, :, i] = X_patch.reshape((1, stride * stride * 3), order='C')
                 patch_id += 1
     end = time.time()
-    # print(f"MX calculated in {end - start} seconds.")
+    print(f"MX calculated in {end - start} seconds.")
     return MX
 
 class CNN:
@@ -163,6 +164,7 @@ class CNN:
 
     def convolve_efficient(self, X_batch):
         if self.MX is None:
+            print("Constructing a new MX for the batch...")
             self.MX = self.construct_MX(X_batch)
         assert self.filters_flat.shape == (self.stride * self.stride * 3, self.n_f), f"Filters are of wrong shape: {self.filters_flat.shape}"
         conv_outputs_mat = np.einsum('ijn, jl->iln', self.MX, self.filters_flat, optimize=True)
@@ -204,15 +206,25 @@ class CNN:
         if is_w_grads and is_Fs_grad:
             print("Grads are OK.")
 
+    def apply_y_smoothing(self, Y, epsilon=0.1):
+        assert Y.shape == (self.K, Y.shape[-1])
+        for i in range(Y.shape[-1]): # iterates over the total samples in Y.
+            idx = np.where(Y[:, i] == 1.0)[0][0]
+            assert Y[idx, i] == 1.0        # Just to be sure.
+            for j in range(self.K):
+                if j == idx:
+                    Y[j, i] = 1.0-epsilon
+                else:
+                    Y[j, i] = epsilon / (self.K-1)
+            assert np.isclose(np.sum(Y[:, i]), 1.0)
+        return Y
+
 
 
 
     # -----------------------------------------------
     #  Network computations
     # -----------------------------------------------
-    def make_prediction(self):
-        return
-
 
     def forward(self, X_batch, return_params=False):
         assert self.filters_flat.shape == (self.stride * self.stride * 3, self.n_f), f"Filters are of wrong shape: {self.filters_flat.shape}"
@@ -295,7 +307,8 @@ class CNN:
         reg_W2 = (2 * self.lam * self.W[1])
         reg_Fs = (2 * self.lam * self.filters_flat)
 
-        G = -(Y_batch-P)
+        Y_batch_smooth = self.apply_y_smoothing(Y_batch, epsilon=0.1)
+        G = -(Y_batch_smooth-P)
         grad_W2 = (1/self.batch_size) * G @ x1.T
         grad_b2 = (1 / self.batch_size) * np.sum(G, axis=1, keepdims=True)
 
@@ -324,9 +337,39 @@ class CNN:
             'grad_b_conv': grad_b_conv
         }
 
+
+
     def set_eta(self, t):
         '''
-        Updates the learning-rate (ETA) using a schedule where the cycle length doubles.
+        Upadtes the learning-rate (eta), based on the internally set cycle.
+        t: int
+            The number gets a +1 every time the model updates the gradients.
+        '''
+
+        l = int(np.floor(t / (2 * self.step_size)))  # l is the number of whole cycles that has been.
+
+        bound_1 = (2 * l) * self.step_size
+        bound_2 = (2 * l + 1) * self.step_size
+
+        # eq. 14.
+        if (bound_1 <= t) and (bound_2 > t):
+            eta_t = self.lr_min + ((t - bound_1) / self.step_size * (self.lr_max - self.lr_min))
+        # eq. 15.
+        elif (bound_2 <= t) and (2 * (l + 1) * self.step_size > t):
+            eta_t = self.lr_max - ((t - bound_2) / self.step_size * (self.lr_max - self.lr_min))
+        else:
+            # Could also raise an error here perhaps?
+            print("The value t is not within any bound. Keeping the current learning rate.")
+            return
+
+        self.lr = eta_t  # updates the learning rate
+
+
+
+    def set_eta_upgrade(self, t):
+        '''
+        Upgraded version of 'set_eta', adapted to handle dynamic step sizes.
+        Doubles the step size with each cycle.
         '''
         s = self.base_step_size  # fixed base step size
         total = 0
@@ -350,7 +393,9 @@ class CNN:
 
         self.lr = eta_t
 
-    def train(self, X, Y, y, val=0.2, epochs=5, seed=None, k=4, n_cycles=4):
+
+
+    def train(self, X, Y, y, X_val, Y_val, y_val, MX_train, MX_val, k=4, n_cycles=4, seed=None):
         '''
         Takes the data as argument and trains the model parameters.
         For each epoch it randomly shuffles the data.
@@ -361,13 +406,6 @@ class CNN:
 
         # Split indices into train and validation sets
         indices = np.random.permutation(N)
-        n_val = int(N * val)
-        val_idx = indices[:n_val]
-        train_idx = indices[n_val:]
-
-        X_val = X[:, :, :, val_idx]
-        Y_val = Y[:, val_idx]
-        y_val = y[val_idx]
 
         batch_losses_val = []
         batch_accuracies_val = []
@@ -377,20 +415,22 @@ class CNN:
         plot_x_axis = []
         etas = []
 
-        K = int(N * (1 - val) // self.batch_size)  # The 'new' number of batches after validation assignment.
-        print(K)
+        K = (N // self.batch_size)  # The 'new' number of batches after validation assignment.
         if self.step_size is None:
             self.step_size = int(k * K)  # updates the step size
         self.base_step_size = self.step_size
         print(f"Step size: {self.step_size}")
 
         # Simulation to calculate a new total updates needed for dynamic updates of step size.
-        #total_updates_needed = n_cycles * 2 * self.step_size
+        '''
+        total_updates_needed = n_cycles * 2 * self.step_size
+        '''
         total_updates_needed = 0
         current_cycle_step_size = self.base_step_size
         for _ in range(n_cycles):
             total_updates_needed += 2 * current_cycle_step_size
             current_cycle_step_size *= 2  # Simulate the doubling for calculation
+
         epochs = int(np.ceil(total_updates_needed / K))
         print(f"Running for {n_cycles} cycles.")
         print(f"Running for {epochs} epochs.")
@@ -398,22 +438,19 @@ class CNN:
 
         t = 1                   # The number of steps in the cyclic learning rates.
 
-        completed_cycles = 0
-        step_size = self.step_size
-
         for i in range(epochs):
-            train_ids_shuffled = np.random.permutation(train_idx)
-            i += 1
+            train_ids_shuffled = np.random.permutation(indices)  # Randomly shuffles the data each batch.
             for j in tqdm(range(K), desc=f"Epoch {i+1}"):
-                if (j+1)*self.batch_size > int(N*(1-val)): break
+                if (j+1)*self.batch_size > int(N): break
                 if t > total_updates_needed: break
 
                 batch_idx = train_ids_shuffled[j * self.batch_size : (j+1) * self.batch_size]
                 X_batch = X[:, :, :, batch_idx]
                 Y_batch = Y[:, batch_idx]
                 y_batch = y[batch_idx]
-                self.set_eta(t)
-                self.MX = self.construct_MX(X_batch)
+                MX_batch = MX_train[:, :, batch_idx]
+                self.MX = MX_batch
+                self.set_eta_upgrade(t)
                 grads = self.backwards(X_batch, Y_batch)
                 self.update_params(grads)
 
@@ -434,10 +471,11 @@ class CNN:
                     P = self.forward(X_batch)
                     losses_train.append(self.loss(Y_batch, P))
                     accuracies_train.append(self.accuracy(y_batch, P))
+
                     # Need to reconstruct some data for the validation batch.
                     batch_size = self.batch_size
                     self.batch_size = X_val.shape[-1]
-                    cnn.MX = cnn.construct_MX(X_val)
+                    self.MX = MX_val
                     P_val = self.forward(X_val)
                     batch_accuracies_val.append(self.accuracy(y_val, P_val))
                     batch_losses_val.append(self.loss(Y_val, P_val))
@@ -523,34 +561,26 @@ def read_data(path_name, dir=False):
             dict = pickle.load(fo, encoding='bytes')
         return extract_data(dict)
 
-def split(X, Y, y, train=0.8, val=0.2, seed=None, wantTest=False):
-    assert train+val <= 1.0, f"Train and validation cannot exceed 1.0."
-    test = 1.0 - train - val
+def split(X, Y, y, n_test=10000, n_val=1000, seed=None):
     N = X.shape[-1]
     indices = np.arange(N)
     if seed is not None:
         np.random.seed(seed)
     np.random.shuffle(indices)
 
-    n_train = int(N * train)
-    n_val = int(N * val)
+    n_train = X.shape[-1] - n_test - n_val
 
     train_idx = indices[:n_train]
     val_idx = indices[n_train:n_train+n_val]
     test_idx = indices[n_train+n_val:]
-    if wantTest:
-        return (
-            X[:, train_idx], Y[:, train_idx], y[train_idx],
-            X[:, val_idx], Y[:, val_idx], y[val_idx],
-            X[:, test_idx], Y[:, test_idx], y[test_idx]
-        )
-    else:
-        return (
-            X[:, train_idx], Y[:, train_idx], y[train_idx],
-            X[:, val_idx], Y[:, val_idx], y[val_idx]
-        )
+    assert test_idx.shape[0] == n_test
+    return (
+        X[:, train_idx], Y[:, train_idx], y[train_idx],
+        X[:, val_idx], Y[:, val_idx], y[val_idx],
+        X[:, test_idx], Y[:, test_idx], y[test_idx]
+    )
 
-def preprocess_data(X_train, X_val, X_test, img_shape):
+def preprocess_data(X_train, X_val, X_test, reshape=False, dtype='double'):
     # Normalizes the data.
     mean = np.mean(X_train, axis=1).reshape (X_train.shape[0], 1)
     std = np.std(X_train, axis=1).reshape(X_train.shape[0], 1)
@@ -559,6 +589,15 @@ def preprocess_data(X_train, X_val, X_test, img_shape):
     X_train = (X_train - mean) / std
     X_val = (X_val - mean) / std
     X_test = (X_test - mean) / std
+
+    if reshape:
+        X_train = X_train.reshape((32, 32, 3, X_train.shape[-1]))
+        X_val = X_val.reshape((32, 32, 3, X_val.shape[-1]))
+        X_test = X_test.reshape((32, 32, 3, X_test.shape[-1]))
+    if dtype == 'float':
+        X_train = X_train.astype(np.float32)
+        X_val = X_val.astype(np.float32)
+        X_test = X_test.astype(np.float32)
 
     return X_train, X_val, X_test
 
@@ -574,24 +613,30 @@ if __name__ == "__main__":
     file_path_batch = file_path_dir / 'data_batch_1'
 
     X, Y, y = read_data(file_path_dir, dir=True)
-    #X_train, Y_train, y_train, X_val, Y_val, y_val = split(X, Y, y)
-    X_test, Y_test, y_test = read_data(file_path_dir / 'test_batch')
+    X_train, Y_train, y_train, X_val, Y_val, y_val, X_test, Y_test, y_test = split(X, Y, y)
 
-    X_train, X_val, X_test = preprocess_data(X, X_test, X_test, (32, 32, 3, X.shape[-1]))
-    X_train = X_train.reshape(32,32,3, X_train.shape[-1])
-    X_train = X_train.astype(np.float32)
-    print(X_train.shape)
+    X_train, X_val, X_test = preprocess_data(X_train, X_val, X_test, reshape=True, dtype='float')
+    print(f"Training set: {X_train.shape}")
+    print(f"Validation set: {X_val.shape}")
+    print(f"Test set: {X_test.shape}")
 
-    cnn = CNN(X=X_train, Y=Y, y=y, lr_min=1e-5, lr_max=1e-1, lam=0.0025, n_batches=100,
-              n_filters=40, stride=4, n_hidden=300, step_size=800, init_MX=False)
-    cnn.train(X_train, Y, y)
+    stride = 4
+    MX_train = construct_MX(X_train, stride)
+    MX_val = construct_MX(X_val, stride)
+    MX_test = construct_MX(X_test, stride)
+
+    start = time.time()
+    cnn = CNN(X=X_train, Y=Y_train, y=y_train, lr_min=1e-5, lr_max=1e-1, lam=0.0025, n_batches=100,
+              n_filters=40, stride=stride, n_hidden=300, step_size=800, MX=MX_train)
+    cnn.train(X_train, Y_train, y_train, X_val, Y_val, y_val, MX_train, MX_val)
+    end = time.time()
 
 
     # Final run of the test data.
-    X_test = X_test.reshape(32,32,3, X_test.shape[-1])
     cnn.batch_size = X_test.shape[-1]
-    cnn.MX = cnn.construct_MX(X_test)
+    cnn.MX = MX_test
     P = cnn.forward(X_test)
     print(f"Accuracy on test data: {cnn.accuracy(y_test, P)}")
+    print(f"Completed training in {end - start} seconds.")
 
 

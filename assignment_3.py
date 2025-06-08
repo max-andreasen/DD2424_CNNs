@@ -16,6 +16,28 @@ from tqdm import tqdm
 from torch_gradient_computations import ComputeGradsWithTorch
 
 
+def construct_MX(X, stride, n_p):
+    '''
+    THIS FUNCTION ASSUMES A SQUARE IMAGE (WIDTH == HEIGHT).
+    :param X:
+    :return:
+    '''
+    # print(f"Calculating MX...")
+    N = X.shape[-1]
+    start = time.time()
+    MX = np.zeros((n_p, stride * stride * 3, N))
+    for i in range(N):
+        X_img = X[:, :, :, i]
+        patch_id = 0
+        for r in range(int(np.sqrt(n_p))):
+            for col in range(int(np.sqrt(n_p))):
+                X_patch = X_img[r * stride:(r + 1) * stride, col * stride:(col + 1) * stride, :]
+                MX[patch_id, :, i] = X_patch.reshape((1, stride * stride * 3), order='C')
+                patch_id += 1
+    end = time.time()
+    # print(f"MX calculated in {end - start} seconds.")
+    return MX
+
 class CNN:
     '''
     The class is currently built around handling square images,
@@ -25,7 +47,7 @@ class CNN:
 
     def __init__(self, X, Y, y, lr=0.01, lr_min=0.0005, lr_max=0.01, lam=0.003,
                  stride=2, n_batches=1, W=None, B=None, filters=None, n_filters=2,
-                 step_size=800, n_hidden=10, init_MX=True):
+                 step_size=800, n_hidden=10, MX=None):
 
         os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -54,6 +76,7 @@ class CNN:
         self.lr_max = lr_max
         self.lam = lam                      # Regularization term 'lambda'.
         self.step_size = step_size          # The step size used for cyclic learning rates.
+        self.base_step_size = step_size
 
         # Weights and parameters
         self.grads = {}                     # Dict with elements 'W1', 'W2', 'b1', 'b2' and 'Fs'.
@@ -67,10 +90,7 @@ class CNN:
         self.filters_flat = self.filters.reshape( (self.stride * self.stride * self.depth, self.n_f), order='C')
 
         # INITIALIZATIONS
-        if init_MX:
-            self.MX = self.construct_MX(self.X)
-        else:
-            self.MX = None
+        self.MX = MX
         '''
         These parameters are HARDCODED for 2 LAYERS. 
         Also, W1.shape[1] is passed as an input variable. 
@@ -304,34 +324,33 @@ class CNN:
             'grad_b_conv': grad_b_conv
         }
 
-
     def set_eta(self, t):
         '''
-        Upadtes the learning-rate (ETA), based on the internally set cycle.
-        t: int
-            The number gets a +1 every time the model updates the gradients.
+        Updates the learning-rate (ETA) using a schedule where the cycle length doubles.
         '''
+        s = self.base_step_size  # fixed base step size
+        total = 0
+        l = 0
 
-        l = int(np.floor(t / (2 * self.step_size))) # l is the number of whole cycles that has been.
+        # Figure out which cycle t is in
+        while True:
+            cycle_len = 2 * s * (2 ** l)
+            if t < total + cycle_len:
+                break
+            total += cycle_len
+            l += 1
 
-        bound_1 = (2*l) * self.step_size
-        bound_2 = (2*l + 1) * self.step_size
+        t_in_cycle = t - total
+        half = cycle_len // 2
 
-        # eq. 14.
-        if (bound_1 <= t) and (bound_2 > t):
-            eta_t = self.lr_min + ( (t-bound_1)/self.step_size * (self.lr_max - self.lr_min) )
-        # eq. 15.
-        elif (bound_2 <= t) and ( 2*(l+1)*self.step_size > t):
-            eta_t = self.lr_max - ( (t-bound_2) / self.step_size * (self.lr_max-self.lr_min) )
+        if t_in_cycle < half:
+            eta_t = self.lr_min + (t_in_cycle / half) * (self.lr_max - self.lr_min)
         else:
-            # Could also raise an error here perhaps?
-            print("The value t is not within any bound. Keeping the current learning rate.")
-            return
+            eta_t = self.lr_max - ((t_in_cycle - half) / half) * (self.lr_max - self.lr_min)
 
-        self.lr = eta_t # updates the learning rate
+        self.lr = eta_t
 
-
-    def train(self, X, Y, y, val=0.2, epochs=5, seed=None, k=4, n_cycles=3):
+    def train(self, X, Y, y, val=0.2, epochs=5, seed=None, k=4, n_cycles=4):
         '''
         Takes the data as argument and trains the model parameters.
         For each epoch it randomly shuffles the data.
@@ -351,29 +370,40 @@ class CNN:
         y_val = y[val_idx]
 
         batch_losses_val = []
-        batch_losses_train = []
-        batch_accuracies_train = []
         batch_accuracies_val = []
+        losses_train = []
+        accuracies_train = []
+
+        plot_x_axis = []
         etas = []
 
         K = int(N * (1 - val) // self.batch_size)  # The 'new' number of batches after validation assignment.
         print(K)
         if self.step_size is None:
             self.step_size = int(k * K)  # updates the step size
+        self.base_step_size = self.step_size
         print(f"Step size: {self.step_size}")
 
-        total_updates_needed = n_cycles * 2 * self.step_size
+        # Simulation to calculate a new total updates needed for dynamic updates of step size.
+        #total_updates_needed = n_cycles * 2 * self.step_size
+        total_updates_needed = 0
+        current_cycle_step_size = self.base_step_size
+        for _ in range(n_cycles):
+            total_updates_needed += 2 * current_cycle_step_size
+            current_cycle_step_size *= 2  # Simulate the doubling for calculation
         epochs = int(np.ceil(total_updates_needed / K))
+        print(f"Running for {n_cycles} cycles.")
         print(f"Running for {epochs} epochs.")
         print(f"t: {total_updates_needed}")
 
         t = 1                   # The number of steps in the cyclic learning rates.
 
-        for i in range(epochs):
-            losses_train = []
-            accuracies_train = []
-            train_ids_shuffled = np.random.permutation(train_idx)
+        completed_cycles = 0
+        step_size = self.step_size
 
+        for i in range(epochs):
+            train_ids_shuffled = np.random.permutation(train_idx)
+            i += 1
             for j in tqdm(range(K), desc=f"Epoch {i+1}"):
                 if (j+1)*self.batch_size > int(N*(1-val)): break
                 if t > total_updates_needed: break
@@ -399,50 +429,43 @@ class CNN:
                     self.batch_size = batch_size
                 '''
 
-                if t % int(self.step_size/4) == 0:
+                if t % 100 == 0: # With dynamic step size, I changed this to 100 instead of step/8.
+                    # Calculating loss and accuracy for training and validation
                     P = self.forward(X_batch)
-                    loss = self.loss(Y_batch, P)
-                    acc_train = self.accuracy(y_batch, P)
-                    losses_train.append(loss)
-                    accuracies_train.append(acc_train)
+                    losses_train.append(self.loss(Y_batch, P))
+                    accuracies_train.append(self.accuracy(y_batch, P))
+                    # Need to reconstruct some data for the validation batch.
+                    batch_size = self.batch_size
+                    self.batch_size = X_val.shape[-1]
+                    cnn.MX = cnn.construct_MX(X_val)
+                    P_val = self.forward(X_val)
+                    batch_accuracies_val.append(self.accuracy(y_val, P_val))
+                    batch_losses_val.append(self.loss(Y_val, P_val))
+                    self.batch_size = batch_size
+                    plot_x_axis.append(t)
 
                 t += 1
                 etas.append(self.lr)
 
-            # Need to reconstruct some data for the validation batch.
-            batch_size = self.batch_size
-            self.batch_size = X_val.shape[-1]
-            cnn.MX = cnn.construct_MX(X_val)
-            P_val = self.forward(X_val)
-            val_acc = self.accuracy(y_val, P_val)
-            val_loss = self.loss(Y_val, P_val)
-            self.batch_size = batch_size
-
-            batch_losses_train.append(np.mean(losses_train))
-            batch_losses_val.append(val_loss)
-            batch_accuracies_val.append(val_acc)
-            batch_accuracies_train.append(np.mean(accuracies_train))
-
-        update_steps = np.arange(1, epochs + 1) * K
 
         # Plot losses
         plt.figure(figsize=(8, 5))
-        plt.plot(update_steps,batch_losses_train, label='Training Loss')
-        plt.plot(update_steps,batch_losses_val, label='Validation Loss')
-        plt.xlabel('Epoch')
+        plt.plot(plot_x_axis,losses_train, label='Training Loss')
+        plt.plot(plot_x_axis,batch_losses_val, label='Validation Loss')
+        plt.xlabel('Update step')
         plt.ylabel('Loss')
-        plt.title('Loss over Epochs')
+        plt.title('Loss over Update steps')
         plt.legend()
         plt.grid(True)
         plt.show()
 
         # Plot accuracies
         plt.figure(figsize=(8, 5))
-        plt.plot(update_steps,batch_accuracies_train, label='Training Accuracy')
-        plt.plot(update_steps,batch_accuracies_val, label='Validation Accuracy')
-        plt.xlabel('Epoch')
+        plt.plot(plot_x_axis,accuracies_train, label='Training Accuracy')
+        plt.plot(plot_x_axis,batch_accuracies_val, label='Validation Accuracy')
+        plt.xlabel('Update step')
         plt.ylabel('Accuracy')
-        plt.title('Accuracy over Epochs')
+        plt.title('Accuracy over Update steps')
         plt.legend()
         plt.grid(True)
         plt.show()
@@ -559,8 +582,8 @@ if __name__ == "__main__":
     X_train = X_train.astype(np.float32)
     print(X_train.shape)
 
-    cnn = CNN(X=X_train, Y=Y, y=y, lr_min=1e-5, lr_max=1e-1, lam=0.003, n_batches=100,
-              n_filters=10, stride=4, n_hidden=50, step_size=800, init_MX=False)
+    cnn = CNN(X=X_train, Y=Y, y=y, lr_min=1e-5, lr_max=1e-1, lam=0.0025, n_batches=100,
+              n_filters=40, stride=4, n_hidden=300, step_size=800, init_MX=False)
     cnn.train(X_train, Y, y)
 
 
